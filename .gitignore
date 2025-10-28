@@ -1,9 +1,10 @@
 # Rust
 /target
 Cargo.lock
+**/*.rs.bk
 
-# Fichiers générés
-*.json
+# Fichiers générés par le scraper
+resultats/
 
 # IDE
 .vscode/
@@ -18,3 +19,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Environment
+.env
