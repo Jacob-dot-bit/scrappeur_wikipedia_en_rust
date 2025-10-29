@@ -159,67 +159,54 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// Fonction pour rechercher des articles sur Wikipedia par mot-clé
 fn rechercher_wikipedia(mot_cle: &str, max_resultats: usize) -> Result<Vec<String>, Box<dyn Error>> {
-    let mot_cle_encode = url_encode(mot_cle);
-    
-    // Utiliser directement HTTPS pour Wikipedia
-    let direct_url = format!("https://fr.wikipedia.org/wiki/{}", mot_cle_encode);
-    
-    println!("  Tentative d'accès direct à l'article...");
-    match https_get("fr.wikipedia.org", &format!("/wiki/{}", mot_cle_encode)) {
-        Ok(_) => {
-            println!("  ✓ Article trouvé directement");
-            return Ok(vec![direct_url]);
-        }
-        Err(_) => {
-            println!("  Article direct non trouvé, recherche en cours...");
-        }
-    }
-    
-    // API OpenSearch
-    let search_path = format!("/w/api.php?action=opensearch&search={}&limit={}&namespace=0&format=json", 
-                              mot_cle_encode, max_resultats);
-    
-    match https_get("fr.wikipedia.org", &search_path) {
-        Ok(json_content) => {
-            let urls = extract_urls_from_opensearch(&json_content);
-            if !urls.is_empty() {
-                return Ok(urls);
+    // Encoder la requête pour la page Special:Recherche (espaces -> +, autres -> %XX)
+    let mot_cle_encode = url_encode_query(mot_cle);
+
+    // Construire le chemin exact demandé : /w/index.php?fulltext=1&search=...
+    let search_page_path = format!("/w/index.php?fulltext=1&search={}", mot_cle_encode);
+
+    println!("  Recherche via la page Special:Recherche...");
+    match https_get("fr.wikipedia.org", &search_page_path) {
+        Ok(html_content) => {
+            let urls = extract_urls_from_search_html(&html_content, max_resultats);
+            if urls.is_empty() {
+                println!("  Aucun résultat trouvé sur la page de recherche pour '{}'.", mot_cle);
             }
+            Ok(urls)
         }
-        Err(_) => {}
+        Err(e) => {
+            println!("  ✗ Impossible de récupérer la page de recherche: {}", e);
+            Ok(Vec::new())
+        }
     }
-    
-    Ok(vec![direct_url])
 }
 
-fn extract_urls_from_opensearch(json: &str) -> Vec<String> {
+fn extract_urls_from_search_html(html: &str, max_results: usize) -> Vec<String> {
+    // Parse la page Special:Recherche et récupère les liens d'articles
     let mut urls = Vec::new();
-    
-    if let Some(last_bracket) = json.rfind('[') {
-        if let Some(end_bracket) = json[last_bracket..].find(']') {
-            let urls_section = &json[last_bracket + 1..last_bracket + end_bracket];
-            
-            for part in urls_section.split(',') {
-                let trimmed = part.trim().trim_matches('"');
-                if trimmed.starts_with("http") {
-                    urls.push(trimmed.to_string());
+    let document = Html::parse_document(html);
+
+    // Sélecteurs courants pour les résultats de recherche
+    let selector = Selector::parse(".mw-search-results .mw-search-result-heading a, .mw-search-result-heading a, a[href^='/wiki/']").unwrap();
+
+    for element in document.select(&selector) {
+        if let Some(href) = element.value().attr("href") {
+            if href.starts_with("/wiki/") && !href.contains(":") && !href.contains('#') {
+                let full = format!("https://fr.wikipedia.org{}", href);
+                if !urls.contains(&full) {
+                    urls.push(full);
+                    if urls.len() >= max_results {
+                        break;
+                    }
                 }
             }
         }
     }
-    
+
     urls
 }
 
-fn url_encode(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            ' ' => "_".to_string(),
-            _ => format!("%{:02X}", c as u8),
-        })
-        .collect()
-}
+// (OpenSearch parsing and legacy url_encode removed — we now use Special:Recherche and url_encode_query)
 
 /// Fonction pour scraper une page Wikipedia
 fn scrape_wikipedia(url: &str) -> Result<WikipediaPage, Box<dyn Error>> {
@@ -238,8 +225,8 @@ fn scrape_wikipedia(url: &str) -> Result<WikipediaPage, Box<dyn Error>> {
         .map(|el| el.text().collect::<String>())
         .unwrap_or_else(|| "Sans titre".to_string());
 
-    // Extraire le résumé avec fallbacks
-    let summary = extract_summary(&document);
+    // Extraire le résumé complet (tous les paragraphes du lead avant le premier h2)
+    let summary = extract_summary_from_html(&html_content);
 
     // Extraire les sections
     let mut sections: Vec<String> = Vec::new();
@@ -318,17 +305,32 @@ fn scrape_wikipedia(url: &str) -> Result<WikipediaPage, Box<dyn Error>> {
     })
 }
 
-fn extract_summary(document: &Html) -> String {
-    let summary_selector1 = Selector::parse("div.mw-parser-output > p").unwrap();
-    for element in document.select(&summary_selector1) {
-        let text = element.text().collect::<String>();
-        let clean_text = text.trim();
-        
-        if clean_text.len() > 100 && !clean_text.starts_with("Cet article") {
-            return clean_text.to_string();
+fn extract_summary_from_html(html: &str) -> String {
+    // Parser le document entier puis extraire l'HTML interne de div.mw-parser-output
+    let doc = Html::parse_document(html);
+    let container_selector = Selector::parse("div.mw-parser-output").unwrap();
+
+    if let Some(container) = doc.select(&container_selector).next() {
+        let inner = container.inner_html();
+        let upto = if let Some(pos) = inner.find("<h2") {
+            &inner[..pos]
+        } else {
+            &inner
+        };
+
+        let snippet = Html::parse_fragment(upto);
+        let p_selector = Selector::parse("p").unwrap();
+        let mut parts: Vec<String> = Vec::new();
+        for p in snippet.select(&p_selector) {
+            let text = p.text().collect::<String>().trim().to_string();
+            if !text.is_empty() {
+                parts.push(text);
+            }
         }
+
+        return parts.join("\n\n");
     }
-    
+
     String::new()
 }
 
@@ -676,4 +678,20 @@ fn generate_search_summary(
     println!("\n📄 Résumé de recherche généré : {}", summary_path);
     
     Ok(())
+}
+
+/// Encodage pour les paramètres de requête (search=)
+fn url_encode_query(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => c.to_string(),
+            ' ' => "+".to_string(),
+            '-' | '_' | '.' | '~' => c.to_string(),
+            _ => {
+                let mut buf = [0u8; 4];
+                let encoded = c.encode_utf8(&mut buf);
+                encoded.bytes().map(|b| format!("%{:02X}", b)).collect::<String>()
+            }
+        })
+        .collect()
 }
