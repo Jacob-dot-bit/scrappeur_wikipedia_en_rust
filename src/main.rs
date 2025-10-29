@@ -1,9 +1,10 @@
 use clap::Parser;
-use scraper::{Html, Selector};
+use scraper::{Html, Selector, ElementRef};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::net::TcpStream;
 use std::sync::Arc;
 use rustls::pki_types::ServerName;
@@ -48,8 +49,8 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    // Récupérer la liste des URLs
-    let urls = if let Some(mot_cle) = args.mot_cle.clone() {
+    // Récupérer la liste des URLs (et mot-clé utilisé en mode interactif le cas échéant)
+    let (urls, interactive_keyword) = if let Some(mot_cle) = args.mot_cle.clone() {
         // Recherche par mot-clé
         println!("\n🔍 Recherche Wikipedia pour: \"{}\"", mot_cle);
         let resultats = rechercher_wikipedia(&mot_cle, args.nombre)?;
@@ -65,20 +66,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!();
         
-        resultats
+        (resultats, Some(mot_cle))
     } else if let Some(fichier) = args.fichier {
         // Lecture des URLs depuis un fichier
         let contenu = fs::read_to_string(fichier)?;
         let urls: Vec<String> = contenu.lines().map(|line| line.to_string()).collect();
         println!("\n📂 Chargement de {} URL(s) depuis le fichier", urls.len());
-        urls
+        (urls, None)
     } else if let Some(urls_str) = args.urls {
         // URLs fournies en ligne de commande
-        urls_str.split(',').map(|s| s.trim().to_string()).collect()
+        (urls_str.split(',').map(|s| s.trim().to_string()).collect(), None)
     } else {
         // Mode interactif
         get_urls_interactif(args.nombre)?
     };
+    // Déterminer le mot-clé effectif (option --mot_cle ou mot-clé saisi en mode interactif)
+    let mot_cle_effectif: Option<String> = args.mot_cle.clone().or(interactive_keyword);
+
+    let urls = urls;
 
     if urls.is_empty() {
         eprintln!("Erreur: Aucune URL fournie");
@@ -89,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
 
     // Créer un dossier spécifique pour cette recherche
-    let search_folder = if let Some(mot_cle) = &args.mot_cle {
+    let search_folder = if let Some(mot_cle) = &mot_cle_effectif {
         // Recherche par mot-clé : créer un dossier avec le mot-clé et timestamp
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let folder_name = format!("{}_{}", sanitize(mot_cle), timestamp);
@@ -114,27 +119,60 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (index, url) in urls.iter().enumerate() {
         println!("[{}/{}] Scraping de: {}", index + 1, urls.len(), url);
 
-        match scrape_wikipedia(url) {
+    match scrape_wikipedia(url, mot_cle_effectif.as_deref()) {
             Ok(page_data) => {
-                // Créer un dossier pour cette page dans le dossier de recherche
-                let page_folder = format!(
-                    "{}/{}",
-                    search_folder,
-                    sanitize(&page_data.title)
-                );
-                fs::create_dir_all(&page_folder)?;
+                // Déduplication par titre : si on a déjà traité un article avec le même titre (cas insensible), on l'ignore
+                let title_lower = page_data.title.to_lowercase();
+                if scraped_articles.iter().any(|a: &WikipediaPage| a.title.to_lowercase() == title_lower) {
+                    println!("  ⚠ Article déjà traité (même titre) : {} — ignoré\n", page_data.title);
+                    continue;
+                }
 
-                // Sauvegarder les données
-                save_page_data(&page_data, &page_folder)?;
+                // Si la recherche est par mot-clé (CLI ou interactif), on écrit uniquement le fichier markdown
+                if mot_cle_effectif.is_some() {
+                    // Nom de fichier unique
+                    let base_name = sanitize(&page_data.title);
+                    let mut file_name = format!("{}.md", base_name);
+                    let mut i = 1;
+                    let mut full_path = format!("{}/{}", search_folder, file_name);
+                    while Path::new(&full_path).exists() {
+                        file_name = format!("{}_{}.md", base_name, i);
+                        full_path = format!("{}/{}", search_folder, file_name);
+                        i += 1;
+                    }
 
-                println!("  ✓ Titre: {}", page_data.title);
-                println!("  ✓ Sections: {}", page_data.sections.len());
-                println!("  ✓ Liens: {}", page_data.links.len());
-                println!("  ✓ Images: {}", page_data.images.len());
-                println!("  ✓ Sauvegardé dans: {}\n", page_folder);
-                
-                // Ajouter à la liste pour le résumé global
-                scraped_articles.push(page_data);
+                    let markdown_content = generate_markdown(&page_data);
+                    fs::write(&full_path, markdown_content)?;
+
+                    println!("  ✓ Titre: {}", page_data.title);
+                    println!("  ✓ Sections: {}", page_data.sections.len());
+                    println!("  ✓ Liens: {}", page_data.links.len());
+                    println!("  ✓ Images: {}", page_data.images.len());
+                    println!("  ✓ Sauvegardé dans: {}\n", full_path);
+
+                    // Ajouter à la liste pour le résumé global
+                    scraped_articles.push(page_data);
+                } else {
+                    // Comportement précédent : créer un dossier par page et y sauvegarder tous les fichiers
+                    let page_folder = format!(
+                        "{}/{}",
+                        search_folder,
+                        sanitize(&page_data.title)
+                    );
+                    fs::create_dir_all(&page_folder)?;
+
+                    // Sauvegarder les données
+                    save_page_data(&page_data, &page_folder)?;
+
+                    println!("  ✓ Titre: {}", page_data.title);
+                    println!("  ✓ Sections: {}", page_data.sections.len());
+                    println!("  ✓ Liens: {}", page_data.links.len());
+                    println!("  ✓ Images: {}", page_data.images.len());
+                    println!("  ✓ Sauvegardé dans: {}\n", page_folder);
+                    
+                    // Ajouter à la liste pour le résumé global
+                    scraped_articles.push(page_data);
+                }
             }
             Err(e) => {
                 eprintln!("  ✗ Erreur: {}\n", e);
@@ -159,57 +197,104 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// Fonction pour rechercher des articles sur Wikipedia par mot-clé
 fn rechercher_wikipedia(mot_cle: &str, max_resultats: usize) -> Result<Vec<String>, Box<dyn Error>> {
-    // Encoder la requête pour la page Special:Recherche (espaces -> +, autres -> %XX)
-    let mot_cle_encode = url_encode_query(mot_cle);
+    let mot_cle_encode = url_encode(mot_cle);
+    // version mot-clé adaptée pour l'URL (espaces -> _)
+    let kw_url = mot_cle.to_lowercase().replace(' ', "_");
 
-    // Construire le chemin exact demandé : /w/index.php?fulltext=1&search=...
-    let search_page_path = format!("/w/index.php?fulltext=1&search={}", mot_cle_encode);
+    // URL directe (fallback)
+    let direct_url = format!("https://fr.wikipedia.org/wiki/{}", mot_cle_encode);
 
-    println!("  Recherche via la page Special:Recherche...");
-    match https_get("fr.wikipedia.org", &search_page_path) {
-        Ok(html_content) => {
-            let urls = extract_urls_from_search_html(&html_content, max_resultats);
-            if urls.is_empty() {
-                println!("  Aucun résultat trouvé sur la page de recherche pour '{}'.", mot_cle);
-            }
-            Ok(urls)
-        }
-        Err(e) => {
-            println!("  ✗ Impossible de récupérer la page de recherche: {}", e);
-            Ok(Vec::new())
-        }
-    }
-}
+    // Récupérer la page de recherche HTML
+    println!("  Récupération de la page de recherche https://fr.wikipedia.org/w/index.php?search={}", mot_cle);
+    // Forcer l'affichage de la page Special:Search pour obtenir la liste de résultats
+    let search_path_html = format!("/w/index.php?search={}&title=Special%3ASearch&fulltext=1", mot_cle_encode);
 
-fn extract_urls_from_search_html(html: &str, max_results: usize) -> Vec<String> {
-    // Parse la page Special:Recherche et récupère les liens d'articles
-    let mut urls = Vec::new();
-    let document = Html::parse_document(html);
+    let mut results: Vec<String> = Vec::new();
 
-    // Sélecteurs courants pour les résultats de recherche
-    let selector = Selector::parse(".mw-search-results .mw-search-result-heading a, .mw-search-result-heading a, a[href^='/wiki/']").unwrap();
+    if let Ok(html_content) = https_get("fr.wikipedia.org", &search_path_html) {
+        let document = Html::parse_document(&html_content);
 
-    for element in document.select(&selector) {
-        if let Some(href) = element.value().attr("href") {
-            if href.starts_with("/wiki/") && !href.contains(":") && !href.contains('#') {
-                let full = format!("https://fr.wikipedia.org{}", href);
-                if !urls.contains(&full) {
-                    urls.push(full);
-                    if urls.len() >= max_results {
-                        break;
+        // Extraire uniquement les liens listés dans la page de recherche
+        // Priorité aux éléments standard de la recherche :
+        // - `div.mw-search-result-heading a` (nouveau markup)
+        // - `div.mw-search-results li a` (fallback historique)
+        let selectors = [
+            "div.mw-search-result-heading a",
+            "div.mw-search-results li a",
+            "ul.mw-search-results li a",
+        ];
+
+        for sel in selectors.iter() {
+            if results.len() >= max_resultats { break; }
+            if let Ok(s) = Selector::parse(sel) {
+                for el in document.select(&s) {
+                    if results.len() >= max_resultats { break; }
+                    if let Some(href) = el.value().attr("href") {
+                        if href.starts_with("/wiki/") && !href.contains(':') && !href.contains('#') {
+                            let url = format!("https://fr.wikipedia.org{}", href);
+                            if !results.contains(&url) {
+                                results.push(url);
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
+    // Si rien trouvé, fallback sur l'URL directe
+    if results.is_empty() {
+        results.push(direct_url);
+    }
+
+    // Dédupliquer (case-insensitive) tout en préservant l'ordre et tronquer à max_resultats
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unique_results: Vec<String> = Vec::new();
+    for u in results.into_iter() {
+        let mut key = u.to_lowercase();
+        if key.ends_with('/') { key = key.trim_end_matches('/').to_string(); }
+        if !seen.contains(&key) {
+            seen.insert(key);
+            unique_results.push(u);
+        }
+        if unique_results.len() >= max_resultats { break; }
+    }
+
+    Ok(unique_results)
+}
+
+fn extract_urls_from_opensearch(json: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    
+    if let Some(last_bracket) = json.rfind('[') {
+        if let Some(end_bracket) = json[last_bracket..].find(']') {
+            let urls_section = &json[last_bracket + 1..last_bracket + end_bracket];
+            
+            for part in urls_section.split(',') {
+                let trimmed = part.trim().trim_matches('"');
+                if trimmed.starts_with("http") {
+                    urls.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    
     urls
 }
 
-// (OpenSearch parsing and legacy url_encode removed — we now use Special:Recherche and url_encode_query)
+fn url_encode(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            ' ' => "_".to_string(),
+            _ => format!("%{:02X}", c as u8),
+        })
+        .collect()
+}
 
 /// Fonction pour scraper une page Wikipedia
-fn scrape_wikipedia(url: &str) -> Result<WikipediaPage, Box<dyn Error>> {
+fn scrape_wikipedia(url: &str, mot_cle: Option<&str>) -> Result<WikipediaPage, Box<dyn Error>> {
     let url_parts = parse_url(url)?;
     let host = &url_parts.0;
     let path = &url_parts.1;
@@ -225,8 +310,8 @@ fn scrape_wikipedia(url: &str) -> Result<WikipediaPage, Box<dyn Error>> {
         .map(|el| el.text().collect::<String>())
         .unwrap_or_else(|| "Sans titre".to_string());
 
-    // Extraire le résumé complet (tous les paragraphes du lead avant le premier h2)
-    let summary = extract_summary_from_html(&html_content);
+    // Extraire le résumé avec fallbacks
+    let summary = extract_summary(&document);
 
     // Extraire les sections
     let mut sections: Vec<String> = Vec::new();
@@ -239,14 +324,60 @@ fn scrape_wikipedia(url: &str) -> Result<WikipediaPage, Box<dyn Error>> {
     }
 
     // Extraire les liens internes
-    let link_selector = Selector::parse("div#mw-content-text a[href^='/wiki/'], a[href^='/wiki/']").unwrap();
+         // Extraire les liens internes (filtrés par mot-clé si fourni)
+        let link_selector = Selector::parse("#mw-content-text a[href^='/wiki/']").unwrap();
+    let keyword_lower_opt = mot_cle.map(|k| k.to_lowercase());
+    let keyword_url_opt = mot_cle.map(|k| k.to_lowercase().replace(' ', "_"));
+
     let links: Vec<String> = document
         .select(&link_selector)
-        .filter_map(|el| el.value().attr("href"))
-        .filter(|href| !href.contains(":") && !href.contains("#"))
-        .take(50)
-        .map(|href| format!("https://fr.wikipedia.org{}", href))
+        .filter_map(|el: ElementRef| {
+            let href = el.value().attr("href")?;
+            // Ignorer les liens administratifs / ancrages
+            if href.contains(':') || href.contains('#') {
+                return None;
+            }
+
+            // Si mot-clé fourni, vérifier plusieurs endroits (texte du lien, title, URL)
+            if let Some(ref kw) = keyword_lower_opt {
+                let text = el.text().collect::<String>().to_lowercase();
+                let title_attr = el.value().attr("title").unwrap_or("").to_lowercase();
+                let href_lower = href.to_lowercase();
+                let kw_url = keyword_url_opt.as_deref().unwrap_or("");
+
+                let contains = text.contains(kw)
+                    || title_attr.contains(kw)
+                    || href_lower.contains(kw)
+                    || (!kw_url.is_empty() && href_lower.contains(kw_url));
+
+                // Si le lien lui-même ne contient pas le mot-clé, vérifier le paragraphe ancêtre
+                if !contains {
+                    let parent_p_opt = el.ancestors().find_map(|node| {
+                        if let Some(elem) = ElementRef::wrap(node) {
+                            // comparer le nom local de la balise (ex: "p")
+                            if elem.value().name.local.as_ref() == "p" {
+                                return Some(elem);
+                            }
+                        }
+                        None
+                    });
+
+                    if let Some(parent_p) = parent_p_opt {
+                        let parent_text = parent_p.text().collect::<String>().to_lowercase();
+                        if parent_text.contains(kw) {
+                            return Some(format!("https://fr.wikipedia.org{}", href));
+                        }
+                    }
+
+                    return None;
+                }
+            }
+
+            Some(format!("https://fr.wikipedia.org{}", href))
+        })
         .collect();
+ 
+
 
     // Extraire les images (filtrer les icônes)
     let image_selector = Selector::parse("img[src]").unwrap();
@@ -305,30 +436,63 @@ fn scrape_wikipedia(url: &str) -> Result<WikipediaPage, Box<dyn Error>> {
     })
 }
 
-fn extract_summary_from_html(html: &str) -> String {
-    // Parser le document entier puis extraire l'HTML interne de div.mw-parser-output
-    let doc = Html::parse_document(html);
-    let container_selector = Selector::parse("div.mw-parser-output").unwrap();
-
-    if let Some(container) = doc.select(&container_selector).next() {
-        let inner = container.inner_html();
-        let upto = if let Some(pos) = inner.find("<h2") {
-            &inner[..pos]
-        } else {
-            &inner
-        };
-
-        let snippet = Html::parse_fragment(upto);
-        let p_selector = Selector::parse("p").unwrap();
+fn extract_summary(document: &Html) -> String {
+    // Parcourir les enfants de div.mw-parser-output et récupérer :
+    // - les divs de type hatnote / bandeau-container / metadata (ex: homonymie)
+    // - les paragraphes <p>
+    // Jusqu'à la première section (h2 ou div.mw-heading...) rencontrée.
+    if let Some(container) = document.select(&Selector::parse("div.mw-parser-output").unwrap()).next() {
         let mut parts: Vec<String> = Vec::new();
-        for p in snippet.select(&p_selector) {
-            let text = p.text().collect::<String>().trim().to_string();
-            if !text.is_empty() {
-                parts.push(text);
+
+        for node in container.children() {
+            if let Some(elem) = ElementRef::wrap(node) {
+                let tag = elem.value().name.local.as_ref();
+
+                // Stop at first section heading (h2) or a div with mw-heading
+                if tag == "h2" {
+                    break;
+                }
+
+                if tag == "div" {
+                    let class = elem.value().attr("class").unwrap_or("");
+                    if class.contains("mw-heading") || class.contains("mw-headline") {
+                        break;
+                    }
+
+                    // Collecter le texte des hatnotes / bandeaux (ex: homonymie)
+                    // Hatnotes / bandeaux : inclure la plupart, mais exclure le message explicite
+                    // de type "Cette page d’homonymie répertorie..." ou les éléments avec id="homonymie".
+                    let id_attr = elem.value().attr("id").unwrap_or("");
+                    if class.contains("hatnote") || class.contains("bandeau-container") || class.contains("metadata") {
+                        let t = elem.text().collect::<String>().trim().to_string();
+                        let t_lower = t.to_lowercase();
+
+                        // Si l'élément est explicitement l'avertissement d'homonymie, on l'ignore
+                        let is_homonymie_block = id_attr == "homonymie"
+                            || (t_lower.contains("page") && t_lower.contains("homonymie"));
+
+                        if !is_homonymie_block && !t.is_empty() {
+                            parts.push(t);
+                        }
+
+                        continue;
+                    }
+                }
+
+                // Collecter les paragraphes
+                if tag == "p" {
+                    let t = elem.text().collect::<String>().trim().to_string();
+                    if !t.is_empty() && !t.starts_with("Cet article") {
+                        parts.push(t);
+                    }
+                    continue;
+                }
             }
         }
 
-        return parts.join("\n\n");
+        if !parts.is_empty() {
+            return parts.join("\n\n");
+        }
     }
 
     String::new()
@@ -510,7 +674,7 @@ fn generate_markdown(page: &WikipediaPage) -> String {
 }
 
 /// Fonction pour le mode interactif (saisie des URLs par l'utilisateur)
-fn get_urls_interactif(default_nombre: usize) -> Result<Vec<String>, Box<dyn Error>> {
+fn get_urls_interactif(default_nombre: usize) -> Result<(Vec<String>, Option<String>), Box<dyn Error>> {
     println!("\n=== Scraper Wikipedia (Mode interactif) ===\n");
     println!("Choisissez une option :");
     println!("1. Entrer des URLs directement");
@@ -544,7 +708,7 @@ fn get_urls_interactif(default_nombre: usize) -> Result<Vec<String>, Box<dyn Err
                 }
             }
             
-            Ok(urls)
+            Ok((urls, None))
         }
         "2" => {
             print!("Entrez le mot-clé à rechercher : ");
@@ -567,11 +731,12 @@ fn get_urls_interactif(default_nombre: usize) -> Result<Vec<String>, Box<dyn Err
             };
             
             println!("\n🔍 Recherche en cours de \"{}\" ({} résultats)...\n", mot_cle, nombre);
-            rechercher_wikipedia(mot_cle, nombre)
+            let results = rechercher_wikipedia(mot_cle, nombre)?;
+            Ok((results, Some(mot_cle.to_string())))
         }
         _ => {
             println!("Choix invalide");
-            Ok(Vec::new())
+            Ok((Vec::new(), None))
         }
     }
 }
@@ -605,15 +770,25 @@ fn generate_search_summary(
     
     for (i, article) in articles.iter().enumerate() {
         let folder_name = sanitize(&article.title);
+        // Si la recherche est par mot-clé, les fichiers markdown sont à la racine du dossier de recherche
+        let table_link = if search_term.is_some() {
+            format!("./{}.md", folder_name)
+        } else {
+            format!("./{}/article.md", folder_name)
+        };
+
+        let table_icon = if search_term.is_some() { "📄" } else { "📁" };
+
         summary.push_str(&format!(
-            "| {} | [{}]({}) | {} | {} | {} | [📁](./{}) |\n",
+            "| {} | [{}]({}) | {} | {} | {} | [{}]({}) |\n",
             i + 1,
             article.title,
             article.url,
             article.sections.len(),
             article.links.len(),
             article.images.len(),
-            folder_name
+            table_icon,
+            table_link
         ));
     }
     
@@ -626,18 +801,29 @@ fn generate_search_summary(
         summary.push_str(&format!("### {}. {}\n\n", i + 1, article.title));
         summary.push_str(&format!("**URL** : [{}]({})\n\n", article.title, article.url));
         
-        if !article.summary.is_empty() {
-            // Prendre les 300 premiers caractères du résumé
-            let short_summary = if article.summary.len() > 300 {
-                format!("{}...", &article.summary[..297])
+            if !article.summary.is_empty() {
+                // Prendre les 300 premiers caractères du résumé en respectant les frontières de caractères Unicode
+                let short_summary = if article.summary.chars().count() > 300 {
+                    let mut s: String = article.summary.chars().take(300).collect();
+                    s.push_str("...");
+                    s
+                } else {
+                    article.summary.clone()
+                };
+                summary.push_str(&format!("{}\n\n", short_summary));
+            // Lien vers le markdown : soit ./<title>.md (mode mot-clé), soit ./<title>/article.md
+            if search_term.is_some() {
+                summary.push_str(&format!("> 📄 [Lire l'article complet](./{}.md)\n\n", sanitize(&article.title)));
             } else {
-                article.summary.clone()
-            };
-            summary.push_str(&format!("{}\n\n", short_summary));
-            summary.push_str(&format!("> 📄 [Lire l'article complet](./{}/article.md)\n\n", sanitize(&article.title)));
+                summary.push_str(&format!("> 📄 [Lire l'article complet](./{}/article.md)\n\n", sanitize(&article.title)));
+            }
         } else {
             summary.push_str("*Résumé non disponible*\n\n");
-            summary.push_str(&format!("> 📄 [Consulter les données](./{}/)\n\n", sanitize(&article.title)));
+            if search_term.is_some() {
+                summary.push_str(&format!("> 📄 [Consulter les données](./{}.md)\n\n", sanitize(&article.title)));
+            } else {
+                summary.push_str(&format!("> 📄 [Consulter les données](./{}/)\n\n", sanitize(&article.title)));
+            }
         }
     
         // Sections principales
@@ -678,20 +864,4 @@ fn generate_search_summary(
     println!("\n📄 Résumé de recherche généré : {}", summary_path);
     
     Ok(())
-}
-
-/// Encodage pour les paramètres de requête (search=)
-fn url_encode_query(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' => c.to_string(),
-            ' ' => "+".to_string(),
-            '-' | '_' | '.' | '~' => c.to_string(),
-            _ => {
-                let mut buf = [0u8; 4];
-                let encoded = c.encode_utf8(&mut buf);
-                encoded.bytes().map(|b| format!("%{:02X}", b)).collect::<String>()
-            }
-        })
-        .collect()
 }
