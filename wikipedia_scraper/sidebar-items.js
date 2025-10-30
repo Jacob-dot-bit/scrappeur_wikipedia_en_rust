@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["extract_header","extract_summary","extract_urls_from_opensearch","generate_markdown","generate_search_summary","get_urls_interactif","http_get","https_get","main","parse_url","rechercher_wikipedia","save_page_data","scrape_wikipedia","url_encode"],"struct":["Args","WikipediaPage"]};
