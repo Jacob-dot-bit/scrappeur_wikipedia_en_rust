@@ -437,64 +437,41 @@ fn scrape_wikipedia(url: &str, mot_cle: Option<&str>) -> Result<WikipediaPage, B
 }
 
 fn extract_summary(document: &Html) -> String {
-    // Parcourir les enfants de div.mw-parser-output et récupérer :
-    // - les divs de type hatnote / bandeau-container / metadata (ex: homonymie)
-    // - les paragraphes <p>
-    // Jusqu'à la première section (h2 ou div.mw-heading...) rencontrée.
+    // On cible le conteneur principal du contenu de l'article.
     if let Some(container) = document.select(&Selector::parse("div.mw-parser-output").unwrap()).next() {
-        let mut parts: Vec<String> = Vec::new();
+        let mut summary_parts: Vec<String> = Vec::new();
+        let h2_selector = Selector::parse("h2").unwrap();
 
+        // On parcourt tous les nœuds enfants directs du conteneur.
         for node in container.children() {
             if let Some(elem) = ElementRef::wrap(node) {
-                let tag = elem.value().name.local.as_ref();
+                let tag_name = elem.value().name.local.as_ref();
 
-                // Stop at first section heading (h2) or a div with mw-heading
-                if tag == "h2" {
+                // C'est le marqueur de la fin du résumé.
+                // On arrête si l'élément est un <h2> ou s'il contient un <h2>.
+                if tag_name == "h2" || elem.select(&h2_selector).next().is_some() {
                     break;
                 }
 
-                if tag == "div" {
-                    let class = elem.value().attr("class").unwrap_or("");
-                    if class.contains("mw-heading") || class.contains("mw-headline") {
-                        break;
+                // On ne garde que le texte des balises <p>.
+                if tag_name == "p" {
+                    let paragraph_text = elem.text().collect::<String>().trim().to_string();
+                    
+                    // On s'assure que le paragraphe n'est pas vide.
+                    if !paragraph_text.is_empty() {
+                        summary_parts.push(paragraph_text);
                     }
-
-                    // Collecter le texte des hatnotes / bandeaux (ex: homonymie)
-                    // Hatnotes / bandeaux : inclure la plupart, mais exclure le message explicite
-                    // de type "Cette page d’homonymie répertorie..." ou les éléments avec id="homonymie".
-                    let id_attr = elem.value().attr("id").unwrap_or("");
-                    if class.contains("hatnote") || class.contains("bandeau-container") || class.contains("metadata") {
-                        let t = elem.text().collect::<String>().trim().to_string();
-                        let t_lower = t.to_lowercase();
-
-                        // Si l'élément est explicitement l'avertissement d'homonymie, on l'ignore
-                        let is_homonymie_block = id_attr == "homonymie"
-                            || (t_lower.contains("page") && t_lower.contains("homonymie"));
-
-                        if !is_homonymie_block && !t.is_empty() {
-                            parts.push(t);
-                        }
-
-                        continue;
-                    }
-                }
-
-                // Collecter les paragraphes
-                if tag == "p" {
-                    let t = elem.text().collect::<String>().trim().to_string();
-                    if !t.is_empty() && !t.starts_with("Cet article") {
-                        parts.push(t);
-                    }
-                    continue;
                 }
             }
         }
 
-        if !parts.is_empty() {
-            return parts.join("\n\n");
+        // On assemble les paragraphes collectés.
+        if !summary_parts.is_empty() {
+            return summary_parts.join("\n\n");
         }
     }
 
+    // Fallback si aucun résumé n'est trouvé.
     String::new()
 }
 
