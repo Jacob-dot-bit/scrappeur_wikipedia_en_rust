@@ -116,17 +116,10 @@ Scrappeur wikipedia/
 │
 ├── resultats/               # Dossier généré après exécution
 │   ├── Avion_20240116_143025/     # Dossier de recherche
-│   │   ├── RESUME_RECHERCHE.md   # ← Résumé global de la recherche
-│   │   ├── Avion/                 # Article 1
-│   │   │   ├── article.md
-│   │   │   ├── data.json
-│   │   │   ├── resume.txt
-│   │   │   ├── sections.txt
-│   │   │   ├── liens.txt
-│   │   │   └── images.txt
-│   │   ├── Avion_de_ligne/       # Article 2
-│   │   │   └── ...
-│   │   └── Boeing_747/           # Article 3
+│   │   ├── RESUME_RECHERCHE.md   # ← Résumé global de la recherche                
+│   │   ├── avion.md    # Article 1
+│   │   ├── Avion_de_ligne.md       # Article 2
+│   │   └── Boeing_747.md          # Article 3
 │   │       └── ...
 │   └── BMW_20240116_150530/      # Autre recherche
 │       ├── RESUME_RECHERCHE.md
