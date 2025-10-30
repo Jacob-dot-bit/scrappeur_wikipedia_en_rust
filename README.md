@@ -360,8 +360,11 @@ Ce scrappeur :
 ## 🤝 Contribution
 
 Projet ESGI4 RUST - 2025
+
 Jakub WERLINSKI
+
 Evan RATSIMANOHATRA
+
 Lucas BELMONTE
 
 ---
