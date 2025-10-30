@@ -359,11 +359,10 @@ Ce scrappeur :
 
 ## 🤝 Contribution
 
-Projet ESGI - BAC +4 RUST - 2024
-
-## 📞 Contact
-
-Projet académique ESGI
+Projet ESGI4 RUST - 2025
+Jakub WERLINSKI
+Evan RATSIMANOHATRA
+Lucas BELMONTE
 
 ---
 
