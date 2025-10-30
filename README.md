@@ -265,11 +265,8 @@ cargo run -- -k "Avion" -n 8
 resultats/
 └── Avion_20240116_143025/
     ├── RESUME_RECHERCHE.md    ← Résumé global avec tableau et stats
-    ├── Avion/
-    │   ├── article.md
-    │   ├── data.json
-    │   └── ...
-    ├── Avion_de_ligne/
+    ├── Avion.md
+    ├── Avion_de_ligne.md
     └── ... (7 autres articles)
 ```
 
@@ -303,9 +300,9 @@ cargo build --release
 ```
 resultats/Avion_20240116_143025/
 ├── RESUME_RECHERCHE.md          # ← Nouveau ! Résumé global
-├── Avion/                       # Article 1
-├── Avion_de_ligne/              # Article 2
-└── Boeing_747/                  # Article 3
+├── Avion.md                       # Article 1
+├── Avion_de_ligne.md              # Article 2
+└── Boeing_747.md                  # Article 3
 ```
 
 ### Par article (sous-dossier)
