@@ -120,7 +120,6 @@ Scrappeur wikipedia/
 │   │   ├── avion.md    # Article 1
 │   │   ├── Avion_de_ligne.md       # Article 2
 │   │   └── Boeing_747.md          # Article 3
-│   │       └── ...
 │   └── BMW_20240116_150530/      # Autre recherche
 │       ├── RESUME_RECHERCHE.md
 │       └── ...
