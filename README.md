@@ -175,8 +175,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### Cloner le projet
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/wikipedia-scraper-rust
-cd wikipedia-scraper-rust
+git clone https://github.com/Jacob-dot-bit/scrappeur_wikipedia_en_rust/
+cd scrappeur_wikipedia_en_rust
 ```
 
 ### Compiler le projet
